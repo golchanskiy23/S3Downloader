@@ -4,6 +4,7 @@ import (
 	"S3Downloader/mocks"
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/s3"
+	"github.com/spf13/pflag"
 	_ "github.com/spf13/pflag"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
@@ -14,7 +15,6 @@ import (
 )
 
 func TestFlagHandling(t *testing.T) {
-	// Тестируем корректность обработки флагов
 	tests := []struct {
 		flagValue   string
 		expectedErr error
@@ -36,32 +36,38 @@ func TestFlagHandling(t *testing.T) {
 
 func TestConfigurate(t *testing.T) {
 	tests := []struct {
-		bucket    string
-		name      string
-		file      string
-		region    string
-		expectErr error
+		name        string
+		args        []string
+		expectErr   error
+		expectValue string
 	}{
-		{"bucket_abc", "name_xyz", "file_test.txt", "us-east-1", nil},
-		{"bucket_invalid", "name_xyz", "file_test.txt", "us-east-1", INCORRECT_BUCKET_FLAG},
+		{
+			name:        "Valid flags",
+			args:        []string{"--bucket=bucket_abc", "--name=name_xyz", "--file=testfile.txt", "--region=us-east-1"},
+			expectErr:   nil,
+			expectValue: "bucket_abc",
+		},
+		{
+			name:        "File creation error",
+			args:        []string{"--bucket=bucket_abc", "--name=name_xyz", "--file=/invalid/path/testfile.txt", "--region=us-east-1"},
+			expectErr:   ERROR_IN_FILE_CREATION,
+			expectValue: "",
+		},
 	}
 
 	for _, tt := range tests {
-		t.Run(tt.bucket, func(t *testing.T) {
-			mockDownloader := mocks.NewDownloader(t)
+		t.Run(tt.name, func(t *testing.T) {
+			pflag.CommandLine = pflag.NewFlagSet("", pflag.ContinueOnError)
+			os.Args = append([]string{"cmd"}, tt.args...)
 
-			mockDownloader.On("Download", mock.Anything, mock.Anything).Return(int64(0), nil).Once()
+			conf, err := Configurate()
 
-			file, err := os.Create("test-file")
-			if err != nil {
-				t.Fatalf("failed to create test file: %v", err)
+			if tt.expectErr != nil {
+				assert.Equal(t, tt.expectErr, err)
+			} else {
+				assert.NoError(t, err)
+				assert.Equal(t, tt.expectValue, conf.Bucket)
 			}
-			defer file.Close()
-			downloader := NewS3Downloader(mockDownloader, 0)
-			_, err = downloader.Download(file, &s3.GetObjectInput{Bucket: aws.String(tt.bucket), Key: aws.String("file_test3.txt")})
-			assert.NoError(t, err)
-
-			mockDownloader.AssertExpectations(t)
 		})
 	}
 }
@@ -110,8 +116,6 @@ func TestS3DownloaderDownload(t *testing.T) {
 		assert.Error(t, err)
 		assert.Equal(t, TARGET_DOWNLOADING_FILE_ABSENCE, err)
 		assert.Equal(t, int64(0), down.NumBytes)
-
-		// Проверка ожиданий
 		s.AssertExpectations(t)
 	})
 

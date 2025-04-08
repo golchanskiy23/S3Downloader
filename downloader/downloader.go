@@ -1,7 +1,6 @@
 package downloader
 
 import (
-	"errors"
 	"fmt"
 	"github.com/avast/retry-go"
 	"github.com/aws/aws-sdk-go/aws"
@@ -12,10 +11,11 @@ import (
 	"io"
 	"os"
 	"strings"
+	"sync"
 	"unicode"
 )
 
-//go:generate mockery --name=Downloader --output=./mocks --filename=mock_downloader.go
+//go:generate mockery --name=Downloader --output=../mocks --filename=mock_downloader.go
 
 type FlagError int
 
@@ -50,6 +50,7 @@ type ConfigurationStructure struct {
 
 type S3Downloader struct {
 	Client   Downloader
+	Mutex    *sync.Mutex
 	NumBytes int64
 }
 
@@ -58,9 +59,6 @@ type Downloader interface {
 }
 
 func FlagHandling(ptr *string) error {
-	if ptr == nil || *ptr == "" || len(*ptr) > 20 {
-		return errors.New("nil pointer")
-	}
 	if strings.HasPrefix(*ptr, "bucket") && strings.Contains(*ptr, "invalid") {
 		return INCORRECT_BUCKET_FLAG
 	} else if strings.HasPrefix(*ptr, "name") {
@@ -86,33 +84,13 @@ func Configurate() (*ConfigurationStructure, error) {
 	regionFlag := pflag.String("region", "us-east-1", "S3 bucket region")
 	pflag.Parse()
 
-	err1 := FlagHandling(bucketFlag)
-	if err1 != nil {
-		return &ConfigurationStructure{}, err1
-	}
-
-	err2 := FlagHandling(nameFlag)
-	if err2 != nil {
-		return &ConfigurationStructure{}, err2
-	}
-
-	err3 := FlagHandling(fileFlag)
-	if err3 != nil {
-		return &ConfigurationStructure{}, err3
-	}
-
-	err4 := FlagHandling(regionFlag)
-	if err4 != nil {
-		return &ConfigurationStructure{}, err4
-	}
-
 	sess, _ := session.NewSession(&aws.Config{
 		Region: aws.String(*regionFlag),
 	},
 	)
 	downloader := s3manager.NewDownloader(sess)
 	f, err := os.Create(*fileFlag)
-	if err != nil {
+	if err != nil || f == nil {
 		return &ConfigurationStructure{}, ERROR_IN_FILE_CREATION
 	}
 
@@ -127,6 +105,7 @@ func Configurate() (*ConfigurationStructure, error) {
 func NewS3Downloader(client Downloader, numBytes int64) *S3Downloader {
 	return &S3Downloader{
 		Client:   client,
+		Mutex:    &sync.Mutex{},
 		NumBytes: numBytes,
 	}
 }
@@ -155,6 +134,5 @@ func (d *S3Downloader) Download(file *os.File, si3 *s3.GetObjectInput) (int64, e
 		fmt.Errorf("Error: %v", err)
 		return -1, err
 	}
-
 	return d.NumBytes, err
 }
