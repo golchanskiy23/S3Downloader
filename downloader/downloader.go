@@ -1,4 +1,4 @@
-package main
+package downloader
 
 import (
 	"errors"
@@ -14,6 +14,8 @@ import (
 	"strings"
 	"unicode"
 )
+
+//go:generate mockery --name=Downloader --output=./mocks --filename=mock_downloader.go
 
 type FlagError int
 
@@ -40,15 +42,15 @@ const (
 )
 
 type ConfigurationStructure struct {
-	client Downloader
-	bucket string
-	name   string
-	file   *os.File
+	Client Downloader
+	Bucket string
+	Name   string
+	File   *os.File
 }
 
 type S3Downloader struct {
-	client   Downloader
-	numBytes int64
+	Client   Downloader
+	NumBytes int64
 }
 
 type Downloader interface {
@@ -59,49 +61,49 @@ func FlagHandling(ptr *string) error {
 	if ptr == nil || *ptr == "" || len(*ptr) > 20 {
 		return errors.New("nil pointer")
 	}
-	if strings.HasPrefix(*ptr, "bucket") {
+	if strings.HasPrefix(*ptr, "bucket") && strings.Contains(*ptr, "invalid") {
 		return INCORRECT_BUCKET_FLAG
 	} else if strings.HasPrefix(*ptr, "name") {
-		for val := range *ptr {
-			if unicode.IsDigit(rune(val)) {
+		for _, val := range *ptr {
+			if unicode.IsDigit(val) {
 				return INCORRECT_NAME_FLAG
 			}
 		}
 	} else if strings.HasPrefix(*ptr, "file") && !strings.HasSuffix(*ptr, ".txt") {
 		return INCORRECT_FILE_FLAG
-	}
-	if !strings.HasPrefix(*ptr, "us") {
+	} else if !strings.HasPrefix(*ptr, "us") {
 		return INCORRECT_REGION_FLAG
 	}
 
 	return nil
 }
 
-func Configurate() (ConfigurationStructure, error) {
-	bucketFlag := pflag.String("bucket", "bucket_test1", "S3 bucket name")
-	nameFlag := pflag.String("name", "name_test2", "S3 downloader name")
+func Configurate() (*ConfigurationStructure, error) {
+	pflag.CommandLine = pflag.NewFlagSet("", pflag.ContinueOnError)
+	bucketFlag := pflag.String("bucket", "bucket_abc", "S3 bucket name")
+	nameFlag := pflag.String("name", "name_xyz", "S3 downloader name")
 	fileFlag := pflag.String("file", "file_test3.txt", "File to download")
-	regionFlag := pflag.String("region", "us-east-2", "S3 bucket region")
+	regionFlag := pflag.String("region", "us-east-1", "S3 bucket region")
 	pflag.Parse()
 
 	err1 := FlagHandling(bucketFlag)
 	if err1 != nil {
-		return ConfigurationStructure{}, err1
+		return &ConfigurationStructure{}, err1
 	}
 
 	err2 := FlagHandling(nameFlag)
 	if err2 != nil {
-		return ConfigurationStructure{}, err2
+		return &ConfigurationStructure{}, err2
 	}
 
 	err3 := FlagHandling(fileFlag)
 	if err3 != nil {
-		return ConfigurationStructure{}, err3
+		return &ConfigurationStructure{}, err3
 	}
 
 	err4 := FlagHandling(regionFlag)
 	if err4 != nil {
-		return ConfigurationStructure{}, err4
+		return &ConfigurationStructure{}, err4
 	}
 
 	sess, _ := session.NewSession(&aws.Config{
@@ -111,37 +113,48 @@ func Configurate() (ConfigurationStructure, error) {
 	downloader := s3manager.NewDownloader(sess)
 	f, err := os.Create(*fileFlag)
 	if err != nil {
-		return ConfigurationStructure{}, ERROR_IN_FILE_CREATION
+		return &ConfigurationStructure{}, ERROR_IN_FILE_CREATION
 	}
 
-	return ConfigurationStructure{
-		client: downloader,
-		bucket: *bucketFlag,
-		name:   *nameFlag,
-		file:   f,
+	return &ConfigurationStructure{
+		Client: downloader,
+		Bucket: *bucketFlag,
+		Name:   *nameFlag,
+		File:   f,
 	}, nil
 }
 
 func NewS3Downloader(client Downloader, numBytes int64) *S3Downloader {
 	return &S3Downloader{
-		client:   client,
-		numBytes: numBytes,
+		Client:   client,
+		NumBytes: numBytes,
 	}
 }
 
 func (d *S3Downloader) Download(file *os.File, si3 *s3.GetObjectInput) (int64, error) {
-	d.numBytes = 0
-
-	err := retry.Do(func() error {
-		n, err1 := d.client.Download(file, si3)
-		if err1 != nil {
-			return err1
-		}
-		d.numBytes = n
-		return err1
-	})
+	d.NumBytes = 0
+	err := retry.Do(
+		func() error {
+			var err error
+			numBytes, err := d.Client.Download(file, si3)
+			if err != nil {
+				err = TARGET_DOWNLOADING_FILE_ABSENCE
+				fmt.Errorf("Error: %v", err)
+				return err
+			}
+			d.NumBytes = numBytes
+			return err
+		},
+		retry.Attempts(1),
+		retry.OnRetry(func(n uint, err error) {
+			fmt.Printf("Retrying request after error: %v", err)
+		}),
+	)
 	if err != nil {
-		return 0, TARGET_DOWNLOADING_FILE_ABSENCE
+		err = TARGET_DOWNLOADING_FILE_ABSENCE
+		fmt.Errorf("Error: %v", err)
+		return -1, err
 	}
-	return d.numBytes, err
+
+	return d.NumBytes, err
 }
